@@ -114,7 +114,7 @@ class GuidedDeepDream:
         return image
     
     def calculate_loss(self, dream_features, ref_features, guidance_weight):
-        """Calculate the combined loss for guided dreaming"""
+        """loss calculation focused on channel correlations"""
         loss = 0
         
         # Weight the layers differently (deeper layers get more weight)
@@ -122,31 +122,38 @@ class GuidedDeepDream:
         
         for i, (dream_feat, ref_feat) in enumerate(zip(dream_features, ref_features)):
             # Standard DeepDream part - maximize activation
-            # Use channel-wise mean to amplify interesting patterns
             standard_loss = tf.reduce_mean(tf.square(dream_feat))
             
-            # Reference guidance part - minimize difference to reference features
-            # Normalize to care about patterns not intensity
-            dream_feat_norm = dream_feat / (tf.math.reduce_std(dream_feat) + 1e-8)
-            ref_feat_norm = ref_feat / (tf.math.reduce_std(ref_feat) + 1e-8)
+            # Reference guidance using channel correlations
+            # This approach focuses on activating similar channels, regardless of spatial position
             
-            # Calculate cosine similarity for pattern matching
-            # Reshape to flatten the spatial dimensions
-            dream_flat = tf.reshape(dream_feat_norm, [tf.shape(dream_feat_norm)[0], -1])
-            ref_flat = tf.reshape(ref_feat_norm, [tf.shape(ref_feat_norm)[0], -1])
+            # Get the channel dimension
+            channels = tf.shape(dream_feat)[-1]
             
-            # Safe operations to avoid shape mismatches
-            dot_product = tf.reduce_sum(dream_flat * ref_flat, axis=1)
-            dream_norm = tf.sqrt(tf.reduce_sum(tf.square(dream_flat), axis=1) + 1e-8)
-            ref_norm = tf.sqrt(tf.reduce_sum(tf.square(ref_flat), axis=1) + 1e-8)
+            # Calculate channel-wise statistics for reference
+            # Mean activation per channel, across spatial dimensions
+            ref_means = tf.reduce_mean(ref_feat, axis=[1, 2], keepdims=True)
             
-            similarity = tf.reduce_mean(dot_product / (dream_norm * ref_norm + 1e-8))
-            guidance_loss = similarity  # Higher is better
+            # Normalize reference channels by their activation strength
+            ref_std = tf.math.reduce_std(ref_means) + 1e-8
+            ref_channels_norm = ref_means / ref_std
+            
+            # Calculate the same for dream features
+            dream_means = tf.reduce_mean(dream_feat, axis=[1, 2], keepdims=True)
+            dream_std = tf.math.reduce_std(dream_means) + 1e-8
+            dream_channels_norm = dream_means / dream_std
+            
+            # Compute channel correlation
+            # We want to activate the same channels that are active in the reference
+            channel_correlation = tf.reduce_mean(dream_channels_norm * ref_channels_norm)
+            
+            # Use channel correlation as the guidance loss
+            guidance_loss = channel_correlation
             
             # Combine losses with layer weight
             layer_weight = layer_weights[i]
             combined_loss = layer_weight * ((1 - guidance_weight) * standard_loss + 
-                             guidance_weight * guidance_loss)
+                            guidance_weight * guidance_loss)
             
             loss += combined_loss
             
