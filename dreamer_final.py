@@ -2,32 +2,26 @@ import os
 import sys
 import time
 import threading
+import tempfile
 import numpy as np
 import tensorflow as tf
-import matplotlib.pyplot as plt
 import PIL.Image
 from tensorflow.keras.applications import InceptionV3
-import tkinter as tk
-from tkinter import ttk, filedialog, messagebox
+import customtkinter as ctk
+from tkinter import filedialog, messagebox
 from PIL import Image, ImageTk
+
+# Set appearance mode and default color theme
+ctk.set_appearance_mode("System")  # "System", "Dark" or "Light"
+ctk.set_default_color_theme("blue")  # "blue", "green", "dark-blue"
 
 print(f"TensorFlow version: {tf.__version__}")
 print(f"Num GPUs Available: {len(tf.config.list_physical_devices('GPU'))}")
 print(f"Devices available: {tf.config.list_physical_devices()}")
 
 class GuidedDeepDream:
-    def __init__(self, 
-                 model_name='inception_v3',
-                 layers=None):
-        """
-        Initialize the Guided DeepDream model.
-        
-        Args:
-            model_name: Name of the model to use (currently only 'inception_v3' supported)
-            layers: List of layer names to use for feature extraction
-        """
+    def __init__(self, model_name='inception_v3', layers=None):
         self.model_name = model_name
-
         self.jitter_dx = 0
         self.jitter_dy = 0
 
@@ -41,7 +35,6 @@ class GuidedDeepDream:
 
             outputs = [base_model.get_layer(name).output for name in self.layers]
             self.model = tf.keras.Model(inputs=base_model.input, outputs=outputs)
-
             self.min_img_size = (299, 299)
         else:
             raise ValueError(f"Model {model_name} not supported")
@@ -49,9 +42,7 @@ class GuidedDeepDream:
         print(f"Model initialized with layers: {self.layers}")
     
     def preprocess_image(self, img_path, target_size=None):
-        """Load and preprocess image for the model"""
         img = PIL.Image.open(img_path).convert("RGB")
-
         original_size = img.size
  
         if target_size is None:
@@ -59,11 +50,8 @@ class GuidedDeepDream:
                           max(original_size[1], self.min_img_size[1]))
 
         img = img.resize(target_size, PIL.Image.LANCZOS)
-
         img_array = np.array(img)
-
         self.original_shape = img_array.shape[:-1]
-
         img_array = np.expand_dims(img_array, axis=0)
 
         if self.model_name == 'inception_v3':
@@ -72,7 +60,6 @@ class GuidedDeepDream:
         return img_array
     
     def deprocess_image(self, img):
-        """Convert processed image back to displayable format with improved quality"""
         img = img.copy()
         img = img[0]
 
@@ -82,11 +69,9 @@ class GuidedDeepDream:
 
         img *= 255.0
         img = np.clip(img, 0, 255).astype(np.uint8)
-        
         return img
     
     def add_jitter(self, image, jitter=32):
-        """Add random jitter to image"""
         if jitter > 0:
             self.jitter_dx, self.jitter_dy = np.random.randint(-jitter, jitter+1, 2)
             image = tf.roll(image, self.jitter_dx, axis=1)
@@ -94,16 +79,13 @@ class GuidedDeepDream:
         return image
     
     def remove_jitter(self, image, jitter=32):
-        """Remove random jitter from image"""
         if jitter > 0:
             image = tf.roll(image, -self.jitter_dx, axis=1)
             image = tf.roll(image, -self.jitter_dy, axis=2)
         return image
     
     def calculate_loss(self, dream_features, ref_features, guidance_weight):
-        """Calculate the combined loss for guided dreaming"""
         loss = 0
-
         layer_weights = np.linspace(0.5, 1.0, len(dream_features))
         
         for i, (dream_feat, ref_feat) in enumerate(zip(dream_features, ref_features)):
@@ -127,40 +109,14 @@ class GuidedDeepDream:
                              guidance_weight * guidance_loss)
             
             loss += combined_loss
-            
         return loss
     
-    def octave_process(self, 
-                    base_img, 
-                    ref_imgs,
-                    octave_scale=1.3,
-                    num_octaves=4,
-                    guidance_weight=0.5,
-                    iterations_per_octave=20,
-                    step_size=0.01,
-                    jitter=32,
-                    show_progress=True,
-                    progress_callback=None):
-        """
-        Process the image at different scales for better detail.
-        
-        Args:
-            base_img: Base image tensor
-            ref_imgs: List of reference image tensors
-            octave_scale: Scale factor between octaves
-            num_octaves: Number of octaves scales to process
-            guidance_weight: How much to influence with reference (0-1)
-            iterations_per_octave: Number of optimization steps per octave
-            step_size: Size of each gradient step
-            jitter: Amount of random jitter to apply
-            show_progress: Whether to show progress images
-            progress_callback: Callback function to update UI progress
-        """
+    def octave_process(self, base_img, ref_imgs, octave_scale=1.3, num_octaves=4,
+                    guidance_weight=0.5, iterations_per_octave=20, step_size=0.01,
+                    jitter=32, show_progress=True, progress_callback=None):
         original_shape = tf.shape(base_img)[1:3]
         shape_float = tf.cast(original_shape, tf.float32)
-
         num_octaves = min(num_octaves, 5)
-
         octave_shapes = []
         min_dim = tf.reduce_min(shape_float).numpy()
 
@@ -199,7 +155,6 @@ class GuidedDeepDream:
                 detail = tf.reshape(detail, tf.shape(octave_base))
 
             dream_img = tf.Variable(octave_base + detail)
-
             resized_ref_imgs = [tf.image.resize(img, octave_shape, 
                                method=tf.image.ResizeMethod.LANCZOS3) 
                                for img in ref_imgs]
@@ -220,20 +175,11 @@ class GuidedDeepDream:
 
         final_result = tf.image.resize(result, original_shape, 
                      method=tf.image.ResizeMethod.LANCZOS5)
-            
         return final_result
         
-    def process_single_octave(self, 
-                             dream_img, 
-                             ref_imgs,
-                             guidance_weight=0.5,
-                             iterations=20,
-                             step_size=0.01,
-                             jitter=32,
-                             progress_callback=None,
-                             octave_index=0,
-                             total_octaves=1):
-        """Process a single octave scale"""
+    def process_single_octave(self, dream_img, ref_imgs, guidance_weight=0.5,
+                             iterations=20, step_size=0.01, jitter=32,
+                             progress_callback=None, octave_index=0, total_octaves=1):
         ref_features_list = []
         for img in ref_imgs:
             ref_features_list.append(self.model(img))
@@ -244,7 +190,6 @@ class GuidedDeepDream:
             ref_features.append(tf.reduce_mean(feature_stack, axis=0))
 
         lr_schedule = np.linspace(step_size, step_size * 0.6, iterations)
-
         dream_var = tf.Variable(dream_img)
         
         for i in range(iterations):
@@ -265,14 +210,11 @@ class GuidedDeepDream:
             with tf.GradientTape() as tape:
                 tape.watch(jittered_img)
                 dream_features = self.model(jittered_img)
-
                 loss = self.calculate_loss(dream_features, ref_features, guidance_weight)
 
             gradients = tape.gradient(loss, jittered_img)
             gradients = gradients / (tf.math.reduce_std(gradients) + 1e-8)
-
             jittered_updated = jittered_img + gradients * current_step_size
-
             updated_img = self.remove_jitter(jittered_updated, jitter)
             dream_var.assign(tf.clip_by_value(updated_img, -1.0, 1.0))
             
@@ -285,42 +227,12 @@ class GuidedDeepDream:
         
         return dream_var
     
-    def guided_deepdream(self, 
-                         base_img_path, 
-                         reference_img_paths,
-                         output_path=None,
-                         target_size=None,
-                         guidance_weight=0.5,
-                         octave_scale=1.3,
-                         num_octaves=4,
-                         iterations_per_octave=20,
-                         step_size=0.01,
-                         jitter=32,
-                         show_original=False,
-                         show_progress=True,
-                         high_quality=True,
-                         progress_callback=None):
-        """
-        Enhanced guided DeepDream implementation with improved quality
-        
-        Args:
-            base_img_path: Path to base image to apply effect to
-            reference_img_paths: List of paths to reference images
-            output_path: Where to save the result (None = don't save)
-            target_size: Size to process images at (None = use original size)
-            guidance_weight: How much to influence with reference (0-1)
-            octave_scale: Scale factor between octaves
-            num_octaves: Number of octave scales to process
-            iterations_per_octave: Number of optimization steps per octave
-            step_size: Size of each gradient step
-            jitter: Amount of random jitter to apply
-            show_original: Whether to show original images
-            show_progress: Whether to show processing progress
-            high_quality: Whether to use higher quality resizing
-            progress_callback: Callback function to update UI progress
-        """
+    def guided_deepdream(self, base_img_path, reference_img_paths, output_path=None,
+                         target_size=None, guidance_weight=0.5, octave_scale=1.3,
+                         num_octaves=4, iterations_per_octave=20, step_size=0.01,
+                         jitter=32, show_original=False, show_progress=True,
+                         high_quality=True, progress_callback=None):
         start_time = time.time()
-
         original_img = PIL.Image.open(base_img_path).convert("RGB")
         orig_width, orig_height = original_img.size
         original_size = (orig_width, orig_height)
@@ -392,24 +304,40 @@ class GuidedDeepDream:
         return result_img
 
 
-class DeepDreamApp:
-    def __init__(self, root):
-        self.root = root
-        self.root.title("Guided DeepDream Creator")
-        self.root.geometry("1200x800")
-        self.root.configure(bg="#f0f0f0")
-
+class ModernDeepDreamUI(ctk.CTk):
+    def __init__(self):
+        super().__init__()
+        
+        # Configure window
+        self.title("Guided DeepDream Creator")
+        self.geometry("1280x800")
+        
+        # Initialize variables
         self.base_img_path = None
         self.ref_img_path = None
         self.result_img = None
         self.is_processing = False
         self.model_ready = False
-
-        self.status_text = tk.StringVar()
-        self.status_text.set("Initializing...")
-
+        
+        # Create status variable
+        self.status_text = ctk.StringVar(value="Initializing...")
+        
+        # Create UI
         self.create_ui()
+        
+        # Initialize model
         self.init_model()
+        
+        # Bind resize event
+        self.bind("<Configure>", self.on_window_resize)
+        
+        # Center window on screen
+        self.update_idletasks()
+        width = self.winfo_width()
+        height = self.winfo_height()
+        x = (self.winfo_screenwidth() // 2) - (width // 2)
+        y = (self.winfo_screenheight() // 2) - (height // 2)
+        self.geometry(f'+{x}+{y}')
     
     def init_model(self):
         self.status_text.set("Initializing model...")
@@ -419,131 +347,197 @@ class DeepDreamApp:
                 default_layers = ['mixed3', 'mixed5', 'mixed7']
                 self.dreamer = GuidedDeepDream(layers=default_layers)
                 self.model_ready = True
-                self.root.after(0, lambda: self.status_text.set("Model ready! Select images to begin."))
-                self.root.after(0, self.check_ready_state)
+                self.after(0, lambda: self.status_text.set("Model ready! Select images to begin"))
+                self.after(0, self.check_ready_state)
             except Exception as e:
-                self.root.after(0, lambda: self.status_text.set(f"Error loading model: {str(e)}"))
+                self.after(0, lambda: self.status_text.set(f"Error loading model: {str(e)}"))
+        
         threading.Thread(target=load_model, daemon=True).start()
     
     def create_ui(self):
-        main_frame = ttk.Frame(self.root, padding=10)
-        main_frame.pack(fill=tk.BOTH, expand=True)
+        # Create main layout with two columns
+        self.grid_columnconfigure(0, weight=1)  # Left panel
+        self.grid_columnconfigure(1, weight=2)  # Right panel - image view (takes more space)
+        self.grid_rowconfigure(0, weight=1)
         
-        # Create split view
-        left_frame = ttk.Frame(main_frame)
-        left_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0, 5))
+        # Create left panel
+        left_panel = ctk.CTkFrame(self)
+        left_panel.grid(row=0, column=0, padx=10, pady=10, sticky="nsew")
         
-        right_frame = ttk.Frame(main_frame)
-        right_frame.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True, padx=(5, 0))
+        # Configure left panel grid
+        left_panel.grid_columnconfigure(0, weight=1)
         
-        # Create top section for image selection
-        img_select_frame = ttk.LabelFrame(left_frame, text="Image Selection", padding=10)
-        img_select_frame.pack(fill=tk.X, padx=5, pady=5)
+        # Section 1: Image Selection
+        img_select_frame = ctk.CTkFrame(left_panel)
+        img_select_frame.grid(row=0, column=0, padx=10, pady=(10, 5), sticky="ew")
+        
+        ctk.CTkLabel(img_select_frame, text="Image Selection", font=ctk.CTkFont(size=16, weight="bold")).pack(
+            anchor="w", padx=10, pady=5)
         
         # Base image selection
-        ttk.Label(img_select_frame, text="Base Image:").grid(row=0, column=0, sticky=tk.W, pady=5)
-        self.base_img_label = ttk.Label(img_select_frame, text="No image selected")
-        self.base_img_label.grid(row=0, column=1, sticky=tk.W, padx=5, pady=5)
-        ttk.Button(img_select_frame, text="Browse...", command=self.select_base_image).grid(row=0, column=2, padx=5, pady=5)
+        base_img_row = ctk.CTkFrame(img_select_frame)
+        base_img_row.pack(fill="x", padx=10, pady=5)
+        
+        ctk.CTkLabel(base_img_row, text="Base Image:").pack(side="left", padx=(0, 10))
+        self.base_img_label = ctk.CTkLabel(base_img_row, text="No image selected")
+        self.base_img_label.pack(side="left", fill="x", expand=True)
+        
+        ctk.CTkButton(base_img_row, text="Browse", command=self.select_base_image,
+                      width=80).pack(side="right", padx=5)
         
         # Reference image selection
-        ttk.Label(img_select_frame, text="Reference Image:").grid(row=1, column=0, sticky=tk.W, pady=5)
-        self.ref_img_label = ttk.Label(img_select_frame, text="No image selected")
-        self.ref_img_label.grid(row=1, column=1, sticky=tk.W, padx=5, pady=5)
-        ttk.Button(img_select_frame, text="Browse...", command=self.select_ref_image).grid(row=1, column=2, padx=5, pady=5)
+        ref_img_row = ctk.CTkFrame(img_select_frame)
+        ref_img_row.pack(fill="x", padx=10, pady=5)
         
-        # Parameters frame
-        params_frame = ttk.LabelFrame(left_frame, text="DeepDream Parameters", padding=10)
-        params_frame.pack(fill=tk.X, padx=5, pady=5)
+        ctk.CTkLabel(ref_img_row, text="Reference Image:").pack(side="left", padx=(0, 10))
+        self.ref_img_label = ctk.CTkLabel(ref_img_row, text="No image selected")
+        self.ref_img_label.pack(side="left", fill="x", expand=True)
+        
+        ctk.CTkButton(ref_img_row, text="Browse", command=self.select_ref_image,
+                      width=80).pack(side="right", padx=5)
+        
+        # Section 2: Parameters
+        params_frame = ctk.CTkFrame(left_panel)
+        params_frame.grid(row=1, column=0, padx=10, pady=10, sticky="ew")
+        
+        ctk.CTkLabel(params_frame, text="DeepDream Parameters", font=ctk.CTkFont(size=16, weight="bold")).pack(
+            anchor="w", padx=10, pady=5)
         
         # Model layers
-        ttk.Label(params_frame, text="Model Layers:").grid(row=0, column=0, sticky=tk.W, pady=5)
-        self.layers_var = tk.StringVar(value="mixed3, mixed5, mixed7")
-        ttk.Entry(params_frame, textvariable=self.layers_var, width=30).grid(row=0, column=1, columnspan=2, sticky=tk.W, padx=5, pady=5)
+        layers_row = ctk.CTkFrame(params_frame)
+        layers_row.pack(fill="x", padx=10, pady=5)
+        
+        ctk.CTkLabel(layers_row, text="Model Layers:").pack(side="left", padx=(0, 10))
+        self.layers_var = ctk.StringVar(value="mixed3, mixed5, mixed7")
+        ctk.CTkEntry(layers_row, textvariable=self.layers_var).pack(side="left", fill="x", expand=True)
         
         # Guidance weight
-        ttk.Label(params_frame, text="Guidance Weight:").grid(row=1, column=0, sticky=tk.W, pady=5)
-        self.guidance_weight_var = tk.DoubleVar(value=0.5)
-        ttk.Scale(params_frame, variable=self.guidance_weight_var, from_=0.0, to=1.0, length=200).grid(row=1, column=1, sticky=tk.W, padx=5, pady=5)
-        ttk.Label(params_frame, textvariable=self.guidance_weight_var).grid(row=1, column=2, sticky=tk.W, padx=5, pady=5)
+        guidance_row = ctk.CTkFrame(params_frame)
+        guidance_row.pack(fill="x", padx=10, pady=5)
         
+        ctk.CTkLabel(guidance_row, text="Guidance Weight:").pack(side="left", padx=(0, 10))
+        self.guidance_weight_var = ctk.DoubleVar(value=0.5)
+        ctk.CTkSlider(guidance_row, from_=0.0, to=1.0, variable=self.guidance_weight_var).pack(
+            side="left", fill="x", expand=True, padx=(0, 10))
+        ctk.CTkLabel(guidance_row, textvariable=self.guidance_weight_var, width=40).pack(side="right")
+        
+        # Two column layout for numeric parameters
+        params_grid = ctk.CTkFrame(params_frame)
+        params_grid.pack(fill="x", padx=10, pady=5)
+        params_grid.grid_columnconfigure(0, weight=1)
+        params_grid.grid_columnconfigure(1, weight=1)
+        
+        # Left column
         # Octaves
-        ttk.Label(params_frame, text="Number of Octaves:").grid(row=2, column=0, sticky=tk.W, pady=5)
-        self.octaves_var = tk.IntVar(value=3)
-        ttk.Spinbox(params_frame, from_=1, to=5, textvariable=self.octaves_var, width=5).grid(row=2, column=1, sticky=tk.W, padx=5, pady=5)
+        octaves_row = ctk.CTkFrame(params_grid)
+        octaves_row.grid(row=0, column=0, padx=(0, 5), pady=5, sticky="ew")
         
-        # Octave scale
-        ttk.Label(params_frame, text="Octave Scale:").grid(row=3, column=0, sticky=tk.W, pady=5)
-        self.octave_scale_var = tk.DoubleVar(value=1.3)
-        ttk.Spinbox(params_frame, from_=1.1, to=2.0, increment=0.1, textvariable=self.octave_scale_var, width=5).grid(row=3, column=1, sticky=tk.W, padx=5, pady=5)
+        ctk.CTkLabel(octaves_row, text="Octaves:").pack(side="left", padx=(0, 10))
+        self.octaves_var = ctk.IntVar(value=3)
         
-        # Iterations per octave
-        ttk.Label(params_frame, text="Iterations per Octave:").grid(row=4, column=0, sticky=tk.W, pady=5)
-        self.iterations_var = tk.IntVar(value=20)
-        ttk.Spinbox(params_frame, from_=10, to=200, increment=10, textvariable=self.iterations_var, width=5).grid(row=4, column=1, sticky=tk.W, padx=5, pady=5)
+        octave_entry = ctk.CTkEntry(octaves_row, textvariable=self.octaves_var, width=60)
+        octave_entry.pack(side="left")
         
         # Step size
-        ttk.Label(params_frame, text="Step Size:").grid(row=5, column=0, sticky=tk.W, pady=5)
-        self.step_size_var = tk.DoubleVar(value=0.01)
-        ttk.Spinbox(params_frame, from_=0.001, to=0.1, increment=0.005, textvariable=self.step_size_var, width=5).grid(row=5, column=1, sticky=tk.W, padx=5, pady=5)
+        step_row = ctk.CTkFrame(params_grid)
+        step_row.grid(row=1, column=0, padx=(0, 5), pady=5, sticky="ew")
+        
+        ctk.CTkLabel(step_row, text="Step Size:").pack(side="left", padx=(0, 10))
+        self.step_size_var = ctk.DoubleVar(value=0.01)
+        ctk.CTkEntry(step_row, textvariable=self.step_size_var, width=60).pack(side="left")
+        
+        # Right column
+        # Octave scale
+        scale_row = ctk.CTkFrame(params_grid)
+        scale_row.grid(row=0, column=1, padx=(5, 0), pady=5, sticky="ew")
+        
+        ctk.CTkLabel(scale_row, text="Octave Scale:").pack(side="left", padx=(0, 10))
+        self.octave_scale_var = ctk.DoubleVar(value=1.3)
+        ctk.CTkEntry(scale_row, textvariable=self.octave_scale_var, width=60).pack(side="left")
         
         # Jitter
-        ttk.Label(params_frame, text="Jitter:").grid(row=6, column=0, sticky=tk.W, pady=5)
-        self.jitter_var = tk.IntVar(value=32)
-        ttk.Spinbox(params_frame, from_=0, to=128, increment=8, textvariable=self.jitter_var, width=5).grid(row=6, column=1, sticky=tk.W, padx=5, pady=5)
+        jitter_row = ctk.CTkFrame(params_grid)
+        jitter_row.grid(row=1, column=1, padx=(5, 0), pady=5, sticky="ew")
         
-        # High quality
-        self.high_quality_var = tk.BooleanVar(value=True)
-        ttk.Checkbutton(params_frame, text="High Quality Processing", variable=self.high_quality_var).grid(row=7, column=0, columnspan=2, sticky=tk.W, pady=5)
+        ctk.CTkLabel(jitter_row, text="Jitter:").pack(side="left", padx=(0, 10))
+        self.jitter_var = ctk.IntVar(value=32)
+        ctk.CTkEntry(jitter_row, textvariable=self.jitter_var, width=60).pack(side="left")
         
-        # Action buttons
-        button_frame = ttk.Frame(left_frame)
-        button_frame.pack(fill=tk.X, padx=5, pady=10)
+        # Iterations
+        iterations_row = ctk.CTkFrame(params_frame)
+        iterations_row.pack(fill="x", padx=10, pady=5)
         
-        self.start_button = ttk.Button(button_frame, text="Start DeepDream", command=self.start_process)
-        self.start_button.pack(side=tk.LEFT, padx=5)
+        ctk.CTkLabel(iterations_row, text="Iterations per Octave:").pack(side="left", padx=(0, 10))
+        self.iterations_var = ctk.IntVar(value=20)
+        ctk.CTkSlider(iterations_row, from_=10, to=100, variable=self.iterations_var).pack(
+            side="left", fill="x", expand=True, padx=(0, 10))
+        ctk.CTkLabel(iterations_row, textvariable=self.iterations_var, width=40).pack(side="right")
         
-        self.save_button = ttk.Button(button_frame, text="Save Result", command=self.save_result, state=tk.DISABLED)
-        self.save_button.pack(side=tk.LEFT, padx=5)
+        # High quality checkbox
+        quality_row = ctk.CTkFrame(params_frame)
+        quality_row.pack(fill="x", padx=10, pady=5)
+        
+        self.high_quality_var = ctk.BooleanVar(value=True)
+        ctk.CTkCheckBox(quality_row, text="High Quality Processing", 
+                        variable=self.high_quality_var).pack(side="left")
+        
+        # Section 3: Action buttons and progress
+        action_frame = ctk.CTkFrame(left_panel)
+        action_frame.grid(row=2, column=0, padx=10, pady=10, sticky="ew")
+        
+        # Buttons
+        button_row = ctk.CTkFrame(action_frame)
+        button_row.pack(fill="x", padx=10, pady=5)
+        
+        self.start_button = ctk.CTkButton(button_row, text="Start DeepDream", 
+                                          command=self.start_process, state="disabled")
+        self.start_button.pack(side="left", padx=(0, 10))
+        
+        self.save_button = ctk.CTkButton(button_row, text="Save Result", 
+                                         command=self.save_result, state="disabled")
+        self.save_button.pack(side="left")
         
         # Progress bar
-        progress_frame = ttk.Frame(left_frame)
-        progress_frame.pack(fill=tk.X, padx=5, pady=5)
+        progress_row = ctk.CTkFrame(action_frame)
+        progress_row.pack(fill="x", padx=10, pady=5)
         
-        ttk.Label(progress_frame, text="Progress:").pack(side=tk.LEFT, padx=5)
-        self.progress_var = tk.DoubleVar()
-        self.progress_bar = ttk.Progressbar(progress_frame, variable=self.progress_var, maximum=100, length=300)
-        self.progress_bar.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=5)
+        ctk.CTkLabel(progress_row, text="Progress:").pack(side="left", padx=(0, 10))
+        self.progress_var = ctk.DoubleVar(value=0)
+        self.progress_bar = ctk.CTkProgressBar(progress_row)
+        self.progress_bar.set(0)
+        self.progress_bar.pack(side="left", fill="x", expand=True, padx=(0, 10))
         
-        ttk.Label(progress_frame, textvariable=self.status_text).pack(side=tk.LEFT, padx=5)
+        # Status text
+        status_row = ctk.CTkFrame(action_frame)
+        status_row.pack(fill="x", padx=10, pady=5)
         
-        # Create image display area
-        self.image_notebook = ttk.Notebook(right_frame)
-        self.image_notebook.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+        ctk.CTkLabel(status_row, textvariable=self.status_text).pack(anchor="w")
         
-        # Base image tab
-        self.base_img_frame = ttk.Frame(self.image_notebook)
-        self.image_notebook.add(self.base_img_frame, text="Base Image")
+        # Create right panel - tabbed image view
+        right_panel = ctk.CTkTabview(self)
+        right_panel.grid(row=0, column=1, padx=10, pady=10, sticky="nsew")
         
-        self.base_img_canvas = tk.Canvas(self.base_img_frame, bg="#222222")
-        self.base_img_canvas.pack(fill=tk.BOTH, expand=True)
+        # Create tabs
+        self.base_tab = right_panel.add("Base Image")
+        self.ref_tab = right_panel.add("Reference Image")
+        self.result_tab = right_panel.add("Result")
         
-        # Reference image tab
-        self.ref_img_frame = ttk.Frame(self.image_notebook)
-        self.image_notebook.add(self.ref_img_frame, text="Reference Image")
+        # Configure tabs
+        for tab in [self.base_tab, self.ref_tab, self.result_tab]:
+            tab.grid_columnconfigure(0, weight=1)
+            tab.grid_rowconfigure(0, weight=1)
         
-        self.ref_img_canvas = tk.Canvas(self.ref_img_frame, bg="#222222")
-        self.ref_img_canvas.pack(fill=tk.BOTH, expand=True)
+        # Create image canvases inside each tab
+        self.base_img_canvas = ctk.CTkCanvas(self.base_tab, bg="#1a1a1a", highlightthickness=0)
+        self.base_img_canvas.grid(row=0, column=0, sticky="nsew", padx=10, pady=10)
         
-        # Result image tab
-        self.result_img_frame = ttk.Frame(self.image_notebook)
-        self.image_notebook.add(self.result_img_frame, text="Result")
+        self.ref_img_canvas = ctk.CTkCanvas(self.ref_tab, bg="#1a1a1a", highlightthickness=0)
+        self.ref_img_canvas.grid(row=0, column=0, sticky="nsew", padx=10, pady=10)
         
-        self.result_img_canvas = tk.Canvas(self.result_img_frame, bg="#222222")
-        self.result_img_canvas.pack(fill=tk.BOTH, expand=True)
-        
+        self.result_img_canvas = ctk.CTkCanvas(self.result_tab, bg="#1a1a1a", highlightthickness=0)
+        self.result_img_canvas.grid(row=0, column=0, sticky="nsew", padx=10, pady=10)
+    
     def select_base_image(self):
-        """Open a file dialog to select the base image"""
         path = filedialog.askopenfilename(
             title="Select Base Image",
             filetypes=[("Image files", "*.jpg *.jpeg *.png *.bmp *.tif *.tiff")]
@@ -551,12 +545,11 @@ class DeepDreamApp:
         
         if path:
             self.base_img_path = path
-            self.base_img_label.config(text=os.path.basename(path))
+            self.base_img_label.configure(text=os.path.basename(path))
             self.load_and_display_image(path, self.base_img_canvas, "Base Image")
             self.check_ready_state()
     
     def select_ref_image(self):
-        """Open a file dialog to select the reference image"""
         path = filedialog.askopenfilename(
             title="Select Reference Image",
             filetypes=[("Image files", "*.jpg *.jpeg *.png *.bmp *.tif *.tiff")]
@@ -564,17 +557,16 @@ class DeepDreamApp:
         
         if path:
             self.ref_img_path = path
-            self.ref_img_label.config(text=os.path.basename(path))
+            self.ref_img_label.configure(text=os.path.basename(path))
             self.load_and_display_image(path, self.ref_img_canvas, "Reference Image")
             self.check_ready_state()
     
     def load_and_display_image(self, path, canvas, label="Image"):
-        """Load and display an image in the specified canvas"""
         try:
             canvas.delete("all")
             img = Image.open(path).convert("RGB")
 
-            self.root.update_idletasks()
+            self.update_idletasks()
             canvas_width = canvas.winfo_width()
             canvas_height = canvas.winfo_height()
 
@@ -601,15 +593,14 @@ class DeepDreamApp:
                 resized_img = img
 
             photo_img = ImageTk.PhotoImage(resized_img)
-
             setattr(self, f"{label.lower().replace(' ', '_')}_photo", photo_img)
 
             x = (canvas_width - new_width) // 2
             y = (canvas_height - new_height) // 2
-            canvas.create_image(x, y, anchor=tk.NW, image=photo_img)
+            canvas.create_image(x, y, anchor="nw", image=photo_img)
 
             info_text = f"{img.width}x{img.height} px"
-            canvas.create_text(10, 10, anchor=tk.NW, text=info_text, fill="white", 
+            canvas.create_text(10, 10, anchor="nw", text=info_text, fill="white", 
                               font=('Arial', 10))
             
         except Exception as e:
@@ -617,25 +608,23 @@ class DeepDreamApp:
             messagebox.showerror("Error", f"Failed to load image: {str(e)}")
     
     def check_ready_state(self):
-        """Check if all required inputs are ready to start processing"""
         if self.model_ready and self.base_img_path and self.ref_img_path:
-            self.start_button.config(state=tk.NORMAL)
+            self.start_button.configure(state="normal")
             self.status_text.set("Ready to process!")
         else:
-            self.start_button.config(state=tk.DISABLED)
+            self.start_button.configure(state="disabled")
     
     def update_progress(self, progress_value, status_message):
-        """Update the progress bar and status message"""
-        self.progress_var.set(progress_value)
+        self.progress_var.set(progress_value / 100)  # CustomTkinter uses 0-1 range
+        self.progress_bar.set(progress_value / 100)
         self.status_text.set(status_message)
 
         if progress_value >= 100:
             self.is_processing = False
-            self.start_button.config(state=tk.NORMAL)
-            self.save_button.config(state=tk.NORMAL)
+            self.start_button.configure(state="normal")
+            self.save_button.configure(state="normal")
     
     def start_process(self):
-        """Start the DeepDream process"""
         if self.is_processing:
             messagebox.showinfo("Processing", "Already processing an image. Please wait.")
             return
@@ -645,9 +634,10 @@ class DeepDreamApp:
             return
 
         self.is_processing = True
-        self.start_button.config(state=tk.DISABLED)
-        self.save_button.config(state=tk.DISABLED)
+        self.start_button.configure(state="disabled")
+        self.save_button.configure(state="disabled")
         self.progress_var.set(0)
+        self.progress_bar.set(0)
         self.status_text.set("Starting process...")
 
         try:
@@ -671,22 +661,19 @@ class DeepDreamApp:
             
         except Exception as e:
             self.is_processing = False
-            self.start_button.config(state=tk.NORMAL)
+            self.start_button.configure(state="normal")
             messagebox.showerror("Error", f"Failed to start process: {str(e)}")
     
     def run_deep_dream_process(self, layers, guidance_weight, num_octaves, 
                                octave_scale, iterations, step_size, jitter, high_quality):
-        """Run the DeepDream process in a background thread"""
         try:
-            self.root.after(0, lambda: self.update_progress(1, "Initializing model with selected layers..."))
+            self.after(0, lambda: self.update_progress(1, "Initializing model with selected layers..."))
 
             try:
-                # Validate layers to ensure they exist in the model
                 self.dreamer = GuidedDeepDream(layers=layers)
             except ValueError as e:
-                # Handle specific layer errors
                 if "not found in model" in str(e):
-                    self.root.after(0, lambda: self.handle_error(
+                    self.after(0, lambda: self.handle_error(
                         f"Invalid layer name. Please use valid InceptionV3 layers such as: "
                         f"mixed0, mixed1, mixed2, mixed3, mixed4, mixed5, mixed6, mixed7, mixed8, mixed9, mixed10"
                     ))
@@ -694,9 +681,8 @@ class DeepDreamApp:
                 else:
                     raise
                     
-            self.root.after(0, lambda: self.update_progress(2, "Setting up processing..."))
+            self.after(0, lambda: self.update_progress(2, "Setting up processing..."))
 
-            import tempfile
             temp_dir = tempfile.gettempdir()
             temp_output_path = os.path.join(temp_dir, f"deepdream_result_{int(time.time())}.jpg")
 
@@ -714,30 +700,27 @@ class DeepDreamApp:
                 show_progress=False,
                 high_quality=high_quality,
                 progress_callback=lambda progress, status: 
-                    self.root.after(0, lambda: self.update_progress(progress, status))
+                    self.after(0, lambda: self.update_progress(progress, status))
             )
 
             self.result_img = result_img
             self.result_img_path = temp_output_path
 
-            self.root.after(0, lambda: self.display_result(temp_output_path))
+            self.after(0, lambda: self.display_result(temp_output_path))
             
         except Exception as e:
             import traceback
             print("DeepDream process error:")
             traceback.print_exc()
-            self.root.after(0, lambda: self.handle_error(str(e)))
+            self.after(0, lambda: self.handle_error(str(e)))
     
     def display_result(self, img_path):
-        """Display the result image in the canvas"""
         self.load_and_display_image(img_path, self.result_img_canvas, "Result")
-        self.image_notebook.select(self.result_img_frame)
         self.status_text.set("DeepDream complete!")
-        self.start_button.config(state=tk.NORMAL)
-        self.save_button.config(state=tk.NORMAL)
+        self.start_button.configure(state="normal")
+        self.save_button.configure(state="normal")
     
     def save_result(self):
-        """Save the result image to a user-specified location"""
         if not hasattr(self, 'result_img_path') or not os.path.exists(self.result_img_path):
             messagebox.showerror("Error", "No result image to save.")
             return
@@ -758,28 +741,17 @@ class DeepDreamApp:
                 messagebox.showerror("Error", f"Failed to save image: {str(e)}")
     
     def handle_error(self, error_message):
-        """Handle errors that occur during processing"""
         self.is_processing = False
-        self.start_button.config(state=tk.NORMAL)
-        self.status_text.set(f"Error: {error_message}")
-        messagebox.showerror("Processing Error", error_message)
-
-
-    def handle_error(self, error_message):
-        """Handle errors that occur during processing"""
-        self.is_processing = False
-        self.start_button.config(state=tk.NORMAL)
+        self.start_button.configure(state="normal")
         self.status_text.set(f"Error: {error_message}")
         messagebox.showerror("Processing Error", error_message)
         
     def on_window_resize(self, event=None):
-        """Handle window resize events to adjust image display"""
         if hasattr(self, '_resize_job'):
-            self.root.after_cancel(self._resize_job)
-        self._resize_job = self.root.after(100, self.refresh_image_displays)
+            self.after_cancel(self._resize_job)
+        self._resize_job = self.after(100, self.refresh_image_displays)
     
     def refresh_image_displays(self):
-        """Refresh all image displays after window resize"""
         if self.base_img_path:
             self.load_and_display_image(self.base_img_path, self.base_img_canvas, "Base Image")
         if self.ref_img_path:
@@ -790,28 +762,23 @@ class DeepDreamApp:
 
 def main():
     try:
-        from ctypes import windll
-        windll.shcore.SetProcessDpiAwareness(1)
-    except:
-        pass
-
-    os.makedirs("deepdream_results", exist_ok=True)
-    os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'  # Reduce TensorFlow logging
-    
-    try:
-        root = tk.Tk()
-        app = DeepDreamApp(root)
-
-        root.bind("<Configure>", app.on_window_resize)
-
-        root.update_idletasks()
-        width = root.winfo_width()
-        height = root.winfo_height()
-        x = (root.winfo_screenwidth() // 2) - (width // 2)
-        y = (root.winfo_screenheight() // 2) - (height // 2)
-        root.geometry(f'+{x}+{y}')
-
-        root.mainloop()
+        # Set up better scaling for high-DPI displays
+        try:
+            from ctypes import windll
+            windll.shcore.SetProcessDpiAwareness(1)
+        except:
+            pass
+        
+        # Reduce TensorFlow logging
+        os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
+        
+        # Create temporary directory for results
+        os.makedirs("deepdream_results", exist_ok=True)
+        
+        # Create and run the app
+        app = ModernDeepDreamUI()
+        app.mainloop()
+        
     except Exception as e:
         import traceback
         print("Unexpected error:")
