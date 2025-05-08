@@ -1,4 +1,4 @@
-name: cvai
+name: cvai2
 channels:
   - conda-forge
   - defaults
